@@ -1,0 +1,23 @@
+version: '3.9'
+
+services:
+  web:
+    build: .                            # Build from Dockerfile in this dir
+    ports:
+      - "8000:8000"                     # Expose Flask app on localhost:8000
+    volumes:
+      - .:/app                          # Mount code for live updates (dev only)
+    depends_on:
+      - redis                           # Wait for Redis to be up
+    environment:
+      - FLASK_ENV=development
+
+  redis:
+    image: redis:7-alpine               # Use official lightweight Redis image
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data                # Persist Redis data
+
+volumes:
+  redis_data:

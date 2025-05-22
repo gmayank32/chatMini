@@ -1,0 +1,4 @@
+flask
+ollama
+redis
+flask-session
