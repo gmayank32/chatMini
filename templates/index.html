@@ -382,20 +382,20 @@
     <ul class="chat-list">
       {% for chat in chat_list %}
         <li class="chat-item {% if chat.id == chat_id %}active{% endif %}" data-chat-id="{{ chat.id }}">
-          <a href="{{ url_for('chat', chat_id=chat.id) }}">
+          <a href="{{ url_for('main.chat', chat_id=chat.id) }}">
             {{ chat.title }} {% if chat.model %}<span class="chat-model">({{ chat.model }})</span>{% endif %}
           </a>
           <div class="dropdown-container">
             <button class="dots-btn">⋮</button>
             <div class="dropdown-menu">
-              <button class="rename-btn">Rename</button>
-              <button class="delete-btn">Delete</button>
+              <button class="rename-btn" data-rename-url="{{ url_for('main.rename_chat', chat_id=chat.id) }}">Rename</button>
+              <button class="delete-btn" data-delete-url="{{ url_for('main.delete_chat', chat_id=chat.id) }}">Delete</button>
             </div>
           </div>
         </li>
       {% endfor %}
     </ul>
-    <form action="/logout" method="GET">
+    <form action="{{ url_for('auth.logout') }}" method="GET">
       <button type="submit" class="logout-btn">Logout</button>
     </form>
   </div>
@@ -414,7 +414,7 @@
       <div id="typing"></div>
     </div>
 
-    <form id="chat-form">
+    <form id="chat-form" data-stream-url="{{ url_for('main.stream_response', chat_id=chat_id) }}">
       <input type="hidden" id="chat-id" value="{{ chat_id }}">
       <input type="hidden" id="model-select" value="{{ selected_model }}">
       <input type="text" id="prompt-input" placeholder="What can I help with?" required />
@@ -433,7 +433,7 @@
   <div class="modal" id="model-selection-modal">
     <div class="modal-content">
       <h3>Select Model</h3>
-      <form id="new-chat-form" action="/new_chat" method="POST">
+      <form id="new-chat-form" action="{{ url_for('main.create_new_chat') }}" method="POST">
         <select id="new-chat-model-select" name="model">
           {% for model in models %}
           <option value="{{ model }}">{{ model }}</option>
@@ -448,6 +448,12 @@
   </div>
 
   <script>
+    // Define URLs for JavaScript to use
+    window.appUrls = {
+      home: "{{ url_for('main.home') }}",
+      createNewChat: "{{ url_for('main.create_new_chat') }}"
+    };
+
     const chatForm = document.getElementById("chat-form");
     const promptInput = document.getElementById("prompt-input");
     const modelSelect = document.getElementById("model-select");
@@ -523,17 +529,27 @@
         btn.addEventListener('click', async e => {
           const chatItem = btn.closest('.chat-item');
           const chatId = chatItem.dataset.chatId;
+          const renameUrl = btn.dataset.renameUrl;
           const newTitle = prompt("Enter new title:");
           if (!newTitle) return;
   
-          const res = await fetch(`/chat/${chatId}/rename`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ title: newTitle })
-          });
+          try {
+            const res = await fetch(renameUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ title: newTitle })
+            });
   
-          if (res.ok) location.reload();
-          else alert("Failed to rename chat.");
+            if (res.ok) {
+              location.reload();
+            } else {
+              const errorData = await res.json();
+              alert(`Failed to rename chat: ${errorData.error || 'Unknown error'}`);
+            }
+          } catch (error) {
+            console.error('Error renaming chat:', error);
+            alert('Failed to rename chat. Please try again.');
+          }
         });
       });
   
@@ -547,20 +563,22 @@
           
           const chatItem = btn.closest('.chat-item');
           const chatId = chatItem.dataset.chatId;
+          const deleteUrl = btn.dataset.deleteUrl;
           const isCurrentChat = chatItem.classList.contains('active');
           const isLastChat = document.querySelectorAll('.chat-item').length === 1;
 
           try {
-            const res = await fetch(`/chat/${chatId}/delete`, {
+            const res = await fetch(deleteUrl, {
               method: 'DELETE',
               headers: {
                 'Content-Type': 'application/json',
-                'X-Requested-With': 'XMLHttpRequest'  // Add this to indicate AJAX
+                'X-Requested-With': 'XMLHttpRequest'
               }
             });
             
             if (!res.ok) {
-              throw new Error(`Server returned ${res.status}`);
+              const errorData = await res.json();
+              throw new Error(errorData.error || `Server returned ${res.status}`);
             }
             
             // Remove the chat item from the DOM
@@ -574,7 +592,7 @@
                 const defaultModel = document.querySelector('#new-chat-model-select').value;
                 const newChatForm = document.createElement('form');
                 newChatForm.method = 'POST';
-                newChatForm.action = '/new_chat';
+                newChatForm.action = window.appUrls.createNewChat;
                 
                 const modelInput = document.createElement('input');
                 modelInput.type = 'hidden';
@@ -586,12 +604,13 @@
                 newChatForm.submit();
               } else {
                 // Just redirect to the home page or another chat
-                window.location.href = '/';
+                window.location.href = window.appUrls.home;
               }
             }
           } catch (error) {
             console.error('Error deleting chat:', error);
-            alert('Failed to delete chat. Please try again.');
+            console.log('Delete URL: ', btn.dataset.deleteUrl)
+            alert(`Failed to delete chat: ${error.message}`);
           }
         });
       });
@@ -608,6 +627,8 @@
         e.preventDefault();
         const prompt = promptInput.value.trim();
         if (!prompt) return;
+        
+        const streamUrl = chatForm.dataset.streamUrl;
     
         // Add user message
         const messagesContainer = document.querySelector('.messages-container');
@@ -627,26 +648,35 @@
         chatBox.scrollTop = chatBox.scrollHeight;
         promptInput.value = "";
     
-        const response = await fetch(`/stream/${chatId}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt, model: modelSelect.value })
-        });
-    
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        
-        let completeResponse = '';
-    
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          const chunk = decoder.decode(value);
-          completeResponse += chunk;
+        try {
+          const response = await fetch(streamUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ prompt, model: modelSelect.value })
+          });
           
-          // Update with current progress and apply formatting
-          renderMarkdown(completeResponse, botMsgContent);
-          chatBox.scrollTop = chatBox.scrollHeight;
+          if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+          }
+    
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          
+          let completeResponse = '';
+    
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            const chunk = decoder.decode(value);
+            completeResponse += chunk;
+            
+            // Update with current progress and apply formatting
+            renderMarkdown(completeResponse, botMsgContent);
+            chatBox.scrollTop = chatBox.scrollHeight;
+          }
+        } catch (error) {
+          console.error('Error sending message:', error);
+          botMsgContent.textContent = 'Error: Failed to get response. Please try again.';
         }
       });
     }
